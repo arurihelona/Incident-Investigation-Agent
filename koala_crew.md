@@ -14,7 +14,7 @@
 
 **Repo Link (Optional):** https://github.com/arurihelona/Incident-Investigation-Agent
 
-**Demo Link (Optional):** https://marcus-reform-sphere-coat.trycloudflare.com
+**Demo Link (Optional):** N/A
 
 ---
 
@@ -221,12 +221,15 @@ An engineer submits a natural-language incident question. The Investigation Agen
 
 ### 7.2 Services, APIs, Databases & Memory
 
-- **Document Store:** Holds incident reports, deployments, guides, architecture notes and postmortems used for investigation.
-- **Retrieval Service:** Performs semantic and metadata-aware searches over the document collection.
+* **Document Search Tool (Python function):** Performs keyword and metadata filtering using service, date, version, and document type over `documents.json`, with optional embedding similarity for semantic retrieval. It is called by the Investigation Agent to retrieve relevant evidence and perform follow-up searches.
 
-**How does your system remember things (memory & state)?**
+* **Document Store (JSON file, in-memory):** Holds the `documents.json` corpus containing incidents, deployments, postmortems, troubleshooting guides, and other investigation documents. The corpus is loaded into memory when the application starts.
 
-The investigation state keeps the original question, retrieved documents, extracted facts, previous searches, and evidence links so later searches can build on earlier findings.
+* **Investigation State (In-memory):** Maintains the original question, retrieved documents, extracted facts, discovered entities, previous searches, and evidence relationships so that later investigation steps can build on earlier findings.
+
+* **Evidence Validator (Python function):** Checks retrieved evidence for contradictions, date/version conflicts, and whether the available evidence supports the proposed conclusion.
+
+* **CLI / Chat Interface:** Where the engineer enters the investigation question and receives the final evidence-backed answer, document citations, evidence sufficiency status, and investigation trace.
 
 **Diagram Link (Optional):** N/A
 
