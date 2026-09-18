@@ -9,8 +9,8 @@ A clean, reliable hackathon prototype demonstrating an autonomous, multi-hop inv
 5. Detects contradictory and outdated operational guidance without hiding older context.
 6. Strictly evaluates similar vs. identical incidents to avoid false equivalencies.
 7. Explicitly reports when evidence is insufficient: `"Insufficient evidence to determine this from the available documents."`
-> **Live Demo URL:** [https://verbose-deck-blunt.ngrok-free.dev](https://verbose-deck-blunt.ngrok-free.dev)
-> *(Permanent static public URL powered by ngrok — never changes on restart)*
+> **Live Cloud Demo:** [https://incident-investigation-agent.onrender.com](https://incident-investigation-agent.onrender.com)
+> *(24/7 Permanent Public Cloud Deployment hosted on Render — direct HTTPS access, zero setup)*
 
 ---
 
