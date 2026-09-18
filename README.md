@@ -9,7 +9,8 @@ A clean, reliable hackathon prototype demonstrating an autonomous, multi-hop inv
 5. Detects contradictory and outdated operational guidance without hiding older context.
 6. Strictly evaluates similar vs. identical incidents to avoid false equivalencies.
 7. Explicitly reports when evidence is insufficient: `"Insufficient evidence to determine this from the available documents."`
-8. Produces traceable answers citing bracketed document IDs (e.g., `[INC-1042]`, `[DEP-882]`).
+> **Live Demo URL:** [https://instrument-alternatively-actors-intl.trycloudflare.com](https://instrument-alternatively-actors-intl.trycloudflare.com)
+> *(Active public link powered by Cloudflare Edge — opens directly with zero password or signup)*
 
 ---
 
