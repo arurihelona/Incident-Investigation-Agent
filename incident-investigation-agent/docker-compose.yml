@@ -1,0 +1,21 @@
+services:
+  incident-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: incident-investigation-agent
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - LLM_PROVIDER=auto
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      - chroma_data:/app/backend/chroma_db
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
