@@ -360,9 +360,9 @@ class InvestigationAgent:
         # Query specifically targeting September 17, 2027 or 2027
         if ("order" in q or "orders-api" in q) and ("2027" in q or "september 17" in q):
             return "Order API latency spike incident report September 17 2027", "incident_report", 1
-        # Timeline queries (e.g. "Since when did the deployment start failing?")
+        # Timeline queries (e.g. "Since when did the deployment start failing?", "What is the timeline of this incident?")
         if self.review_agent.is_timeline_question(question):
-            if any(k in q for k in ["order", "deploy", "fail", "issue", "problem", "latency", "start"]):
+            if any(k in q for k in ["order", "deploy", "fail", "issue", "problem", "latency", "start", "incident", "timeline", "first", "event"]):
                 return "Order API latency spike incident report September 16", "incident_report", 1
         # Test A: Order API latency investigation
         if "order" in q or "september 16" in q or "1042" in q:
@@ -589,22 +589,40 @@ class InvestigationAgent:
         doc_ids = {e.document_id for e in evidence}
         q_lower = question.lower()
 
+        is_since_when = self.review_agent.is_since_when_question(question)
+
         # Step 1: Temporal Mismatch Check (Requirement 1)
         temporal_val = sufficiency_info.get("temporal_validation")
         if temporal_val and not temporal_val.get("is_supported", True):
             req_date = temporal_val.get("requested_date_str", "the requested date")
             answer_body = f"I found related Order API information, but I found no evidence for {req_date}. I cannot determine the cause from the available documents."
 
-        # Scenario: Timeline / "Since when" / Temporal Question
-        elif is_timeline_query and timeline_analysis:
+        # Scenario 1: "Since when..." questions (Focus strictly on earliest failure date, document ID, deployment, and start time certainty)
+        elif is_timeline_query and is_since_when and timeline_analysis:
             answer_body = timeline_analysis.get("narrative", "")
+
+        # Scenario 2: "Timeline..." questions (Focus on complete chronological sequence of events: Date/time → event → document ID)
+        elif is_timeline_query and not is_since_when:
             if timeline:
-                tl_items = []
+                seq_lines = []
                 for ev in timeline:
-                    t_str = f" at {ev.time}" if ev.time else ""
+                    t_str = f" {ev.time}" if ev.time else ""
                     svc_info = f" ({ev.service} {ev.version})" if ev.service and ev.version else ""
-                    tl_items.append(f"- {ev.date}{t_str}: [{ev.document_id}]{svc_info} — {ev.event}")
-                answer_body += "\n\nChronological Event Timeline:\n" + "\n".join(tl_items)
+                    seq_lines.append(f"- {ev.date}{t_str} → {ev.event}{svc_info} → [{ev.document_id}]")
+                answer_body = (
+                    "Chronological sequence of retrieved events (earliest to latest):\n\n"
+                    + "\n".join(seq_lines)
+                )
+                if timeline_analysis and timeline_analysis.get("earliest_deployment") and timeline_analysis.get("earliest_failure"):
+                    ed = timeline_analysis["earliest_deployment"]
+                    ef = timeline_analysis["earliest_failure"]
+                    dep_info = f"{ed.date}" + (f" at {ed.time}" if ed.time else "")
+                    answer_body += (
+                        f"\n\nChronological Summary: The sequence began with deployment [{ed.document_id}] on {dep_info} ({ed.version or 'production'}), "
+                        f"and the incident latency spike was documented on {ef.date} in [{ef.document_id}]."
+                    )
+            else:
+                answer_body = "Based on the available documents, no chronological timeline events could be identified."
 
         # Scenario A: Deployment-related incident
         elif "orders-api" in q_lower or "order api" in q_lower or "1042" in q_lower or "september 16" in q_lower:

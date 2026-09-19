@@ -288,6 +288,32 @@ class TestIncidentInvestigationAgent(unittest.TestCase):
         self.assertEqual(timeline[2].document_id, "INC-1042", "Latest event (2026-09-16) must come third")
         self.assertEqual(timeline[1].time, "18:10 UTC", "Time must be extracted properly")
 
+    def test_distinction_between_since_when_and_timeline_queries(self):
+        """Test: 'Since when' questions focus on earliest failure, while 'Timeline' questions output the full chronological sequence."""
+        req_since = InvestigationRequest(question="Since when did the deployment start failing?")
+        resp_since = self.agent.investigate(req_since)
+
+        req_timeline = InvestigationRequest(question="What is the timeline of this incident?")
+        resp_timeline = self.agent.investigate(req_timeline)
+
+        # 1. 'Since when' answer focuses on earliest failure date & document ID without full arrow sequence
+        self.assertIn("2026-09-16", resp_since.answer)
+        self.assertIn("[INC-1042]", resp_since.answer)
+        self.assertIn("[DEP-882]", resp_since.answer)
+        self.assertNotIn("Chronological sequence of retrieved events", resp_since.answer)
+        self.assertNotIn("→", resp_since.answer)
+
+        # 2. 'Timeline' answer contains full chronological sequence
+        self.assertIn("Chronological sequence of retrieved events", resp_timeline.answer)
+        self.assertIn("→", resp_timeline.answer)
+        self.assertIn("[PM-211]", resp_timeline.answer)
+        self.assertIn("[DEP-882]", resp_timeline.answer)
+        self.assertIn("[INC-1042]", resp_timeline.answer)
+
+        # 3. Both responses have timeline populated in schema for UI
+        self.assertGreaterEqual(len(resp_since.timeline), 2)
+        self.assertGreaterEqual(len(resp_timeline.timeline), 2)
+
 if __name__ == "__main__":
     unittest.main()
 

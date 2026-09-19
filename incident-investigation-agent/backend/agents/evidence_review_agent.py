@@ -37,6 +37,24 @@ class EvidenceReviewAgent:
         ]
         return any(re.search(p, q) for p in patterns)
 
+    @staticmethod
+    def is_since_when_question(question: str) -> bool:
+        """Detects if user question asks specifically for the earliest start date/time rather than the full timeline sequence."""
+        q = question.lower()
+        # If user explicitly asks for sequence / timeline / what happened first, treat as timeline query
+        if any(w in q for w in ["timeline", "chronolog", "what happened first", "what happened before", "what happened after", "order of events", "sequence"]):
+            return False
+        patterns = [
+            r"\bsince when\b",
+            r"\bwhen did\b",
+            r"\bstart(?:ed)?\s+failing\b",
+            r"\bproblem\s+begin\b",
+            r"\bissue\s+start\b",
+            r"\bstart\s+time\b",
+            r"\bwhen was\b",
+        ]
+        return any(re.search(p, q) for p in patterns)
+
     def extract_timeline(self, documents: List[Dict[str, Any]]) -> List[TimelineEvent]:
         """Extracts dated events from evidence and sorts them chronologically from earliest to latest."""
         events: List[TimelineEvent] = []
