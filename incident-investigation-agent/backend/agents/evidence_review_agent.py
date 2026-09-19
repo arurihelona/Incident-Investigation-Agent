@@ -1,7 +1,8 @@
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from models.schemas import ContradictionItem, ContradictionDocInfo, SimilarVsIdentical, EvidenceItem
+from models.schemas import ContradictionItem, ContradictionDocInfo, SimilarVsIdentical, EvidenceItem, TimelineEvent
 
 logger = logging.getLogger("evidence_review_agent")
 
@@ -9,11 +10,143 @@ class EvidenceReviewAgent:
     """Logical Evidence Review Agent responsible for evidence verification,
 
     contradiction detection, version/date comparisons, similar vs identical incident analysis,
-    causation guarding, and evidence sufficiency evaluation.
+    causation guarding, timeline extraction, and evidence sufficiency evaluation.
     """
 
     def __init__(self):
         pass
+
+    @staticmethod
+    def is_timeline_question(question: str) -> bool:
+        """Detects if user question asks for a timeline, chronological sequence, or start time."""
+        q = question.lower()
+        patterns = [
+            r"\bsince when\b",
+            r"\bwhen did\b",
+            r"\bwhat happened first\b",
+            r"\bwhat happened before\b",
+            r"\bwhat happened after\b",
+            r"\btimeline\b",
+            r"\bchronolog\w*\b",
+            r"\bstart(?:ed)? failing\b",
+            r"\bproblem begin\b",
+            r"\bissue start\b",
+            r"\bwhen was\b",
+            r"\border of events\b",
+            r"\bstart time\b"
+        ]
+        return any(re.search(p, q) for p in patterns)
+
+    def extract_timeline(self, documents: List[Dict[str, Any]]) -> List[TimelineEvent]:
+        """Extracts dated events from evidence and sorts them chronologically from earliest to latest."""
+        events: List[TimelineEvent] = []
+        seen_docs = set()
+
+        for d in documents:
+            meta = d.get("metadata", d)
+            doc_id = d.get("document_id") or meta.get("document_id", "")
+            if not doc_id or doc_id in seen_docs:
+                continue
+            seen_docs.add(doc_id)
+
+            date = meta.get("date", "")
+            if not date or date == "Unknown date":
+                continue
+
+            content = d.get("content", "")
+            title = meta.get("title", "")
+            service = meta.get("service") or None
+            version = meta.get("version") or None
+            doc_type = meta.get("type", "")
+
+            # Extract time if available, e.g. "18:10 UTC"
+            time_match = re.search(r"\b(\d{1,2}:\d{2}(?:\s*UTC|\s*GMT)?)\b", content, re.IGNORECASE)
+            time_val = time_match.group(1).strip() if time_match else None
+
+            # Clean factual event summary
+            event_desc = title
+            if content:
+                first_sentence = content.split(".")[0].strip()
+                if first_sentence and first_sentence.lower() != title.lower():
+                    event_desc = f"{title} — {first_sentence}"
+                elif first_sentence:
+                    event_desc = first_sentence
+
+            events.append(TimelineEvent(
+                date=date,
+                time=time_val,
+                event=event_desc,
+                document_id=doc_id,
+                service=service,
+                version=version,
+                event_type=doc_type
+            ))
+
+        # Sort chronologically from earliest to latest
+        def sort_key(e: TimelineEvent):
+            time_str = e.time or "00:00"
+            match = re.search(r"(\d{1,2}):(\d{2})", time_str)
+            t_normalized = f"{int(match.group(1)):02d}:{int(match.group(2)):02d}" if match else "00:00"
+            return (e.date, t_normalized)
+
+        events.sort(key=sort_key)
+        return events
+
+    def get_timeline_analysis(self, timeline: List[TimelineEvent], question: str) -> Dict[str, Any]:
+        """Analyzes chronological events, identifying earliest deployment vs earliest documented failure."""
+        deployments = [e for e in timeline if e.event_type in ["deployment_note", "deployment"] or "deploy" in e.event.lower()]
+        failures = [
+            e for e in timeline
+            if e.event_type not in ["postmortem", "deployment_note", "deployment"]
+            and (e.event_type in ["incident_report", "incident"] or any(w in e.event.lower() for w in ["latency", "error", "spike", "fail", "slow"]))
+        ]
+        postmortems = [e for e in timeline if e.event_type == "postmortem" or "postmortem" in e.event.lower()]
+
+        earliest_dep = deployments[0] if deployments else None
+        if earliest_dep:
+            dep_failures = [f for f in failures if f.date >= earliest_dep.date]
+            earliest_fail = dep_failures[0] if dep_failures else (failures[0] if failures else None)
+        else:
+            earliest_fail = failures[0] if failures else None
+
+        if not failures and not deployments:
+            narrative = "Based on the available documents, the exact start time of the failure cannot be determined."
+        elif not failures and deployments:
+            dep_info = f"{earliest_dep.date}" + (f" at {earliest_dep.time}" if earliest_dep.time else "")
+            dep_ver = f" ({earliest_dep.version})" if earliest_dep.version else ""
+            narrative = (
+                f"Based on the available documents, the exact start time of the failure cannot be determined. "
+                f"The earliest related event is deployment [{earliest_dep.document_id}] on {dep_info}{dep_ver}, "
+                f"but no failure or incident start date is documented in the available records."
+            )
+        elif failures and earliest_dep:
+            dep_info = f"{earliest_dep.date}" + (f" at {earliest_dep.time}" if earliest_dep.time else "")
+            dep_ver = f" ({earliest_dep.version})" if earliest_dep.version else ""
+            if earliest_dep.date != earliest_fail.date:
+                narrative = (
+                    f"Based on the available evidence, the issue is first documented on {earliest_fail.date} in [{earliest_fail.document_id}]. "
+                    f"Prior to this, deployment [{earliest_dep.document_id}] occurred on {dep_info}{dep_ver}. "
+                    f"The deployment date ({earliest_dep.date}) should not be confused with the failure start date ({earliest_fail.date}). "
+                    f"The exact start time of the failure cannot be determined from the documents beyond being first documented on {earliest_fail.date}."
+                )
+            else:
+                narrative = (
+                    f"Based on the available evidence, the issue is first documented on {earliest_fail.date} in [{earliest_fail.document_id}], "
+                    f"following deployment [{earliest_dep.document_id}] on {dep_info}{dep_ver}."
+                )
+        elif failures:
+            narrative = f"Based on the available evidence, the issue is first documented on {earliest_fail.date} in [{earliest_fail.document_id}] ({earliest_fail.event})."
+        else:
+            narrative = f"Based on available evidence, {len(timeline)} chronological event(s) were identified."
+
+        return {
+            "narrative": narrative,
+            "earliest_deployment": earliest_dep,
+            "earliest_failure": earliest_fail,
+            "deployments": deployments,
+            "failures": failures,
+            "postmortems": postmortems
+        }
 
     def parse_date(self, date_str: str) -> Optional[datetime]:
         try:

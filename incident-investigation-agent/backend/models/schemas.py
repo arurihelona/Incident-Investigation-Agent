@@ -66,6 +66,15 @@ class SimilarVsIdentical(BaseModel):
     previous_context: str
     explanation: str
 
+class TimelineEvent(BaseModel):
+    date: str
+    time: Optional[str] = None
+    event: str
+    document_id: str
+    service: Optional[str] = None
+    version: Optional[str] = None
+    event_type: Optional[str] = None
+
 class InvestigationRequest(BaseModel):
     question: str
 
@@ -83,5 +92,8 @@ class InvestigationResponse(BaseModel):
     evidence_gap: List[str] = Field(default_factory=list)
     stop_reason: Optional[str] = None
     metrics: Optional[InvestigationMetrics] = None
+    timeline: List[TimelineEvent] = Field(default_factory=list)
+    is_timeline_query: bool = False
     raw_summary: Optional[str] = None
+
 

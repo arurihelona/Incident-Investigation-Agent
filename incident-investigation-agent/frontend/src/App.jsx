@@ -110,6 +110,8 @@ export default function App() {
               dateVersionAnalysis={result.date_version_analysis}
               similarVsIdentical={result.similar_vs_identical}
               evidenceGap={result.evidence_gap}
+              timeline={result.timeline}
+              isTimelineQuery={result.is_timeline_query}
             />
 
             <ContradictionCard

@@ -195,6 +195,99 @@ class TestIncidentInvestigationAgent(unittest.TestCase):
         self.assertEqual(resp.metrics.investigation_status, "Completed")
         self.assertIn("Investigation completed", resp.metrics.stop_reason)
 
+    def test_timeline_question_returns_chronological_events(self):
+        """Test A: Timeline question returns chronological events."""
+        question = "Since when did the deployment start failing?"
+        req = InvestigationRequest(question=question)
+        resp = self.agent.investigate(req)
+
+        # Timeline detection
+        self.assertTrue(resp.is_timeline_query, "Question should be detected as a timeline query")
+        self.assertGreaterEqual(len(resp.timeline), 2, "Timeline should extract multiple dated events")
+
+        # Verify step action
+        step_actions = [s.action for s in resp.investigation_steps]
+        self.assertIn("timeline_constructed", step_actions, "Step action 'timeline_constructed' must be present")
+
+        # Chronological ordering (earliest to latest)
+        for i in range(len(resp.timeline) - 1):
+            t_curr = resp.timeline[i]
+            t_next = resp.timeline[i + 1]
+            self.assertLessEqual(t_curr.date, t_next.date, "Timeline events must be in chronological order")
+
+    def test_since_when_distinguishes_deployment_from_failure(self):
+        """Test B: 'Since when' distinguishes deployment date from failure date."""
+        question = "Since when did the deployment start failing?"
+        req = InvestigationRequest(question=question)
+        resp = self.agent.investigate(req)
+
+        # Answer must distinguish deployment (2026-09-15) from failure (2026-09-16)
+        self.assertIn("2026-09-16", resp.answer, "Must identify first documented failure date as 2026-09-16")
+        self.assertIn("2026-09-15", resp.answer, "Must identify deployment date as 2026-09-15")
+        self.assertIn("[INC-1042]", resp.answer)
+        self.assertIn("[DEP-882]", resp.answer)
+
+        # Must explicitly clarify not to confuse deployment date with failure date
+        ans_lower = resp.answer.lower()
+        self.assertTrue(
+            "not be confused" in ans_lower or "distinguish" in ans_lower or "first documented" in ans_lower,
+            "Must explicitly note that deployment date should not be confused with failure start date."
+        )
+
+    def test_unknown_start_time_graceful_handling(self):
+        """Test C: Unknown start time is handled gracefully."""
+        from models.schemas import TimelineEvent
+        # Test review agent directly with documents that only have deployment
+        only_deployment = [
+            TimelineEvent(
+                date="2026-09-15",
+                time="18:10 UTC",
+                event="Orders deployment version v2.8.1 deployed to production",
+                document_id="DEP-882",
+                service="orders-api",
+                version="v2.8.1",
+                event_type="deployment_note"
+            )
+        ]
+        analysis = self.agent.review_agent.get_timeline_analysis(only_deployment, "When did the failure start?")
+        self.assertIn(
+            "Based on the available documents, the exact start time of the failure cannot be determined",
+            analysis["narrative"]
+        )
+
+        # Empty timeline test
+        empty_analysis = self.agent.review_agent.get_timeline_analysis([], "When did it fail?")
+        self.assertEqual(
+            empty_analysis["narrative"],
+            "Based on the available documents, the exact start time of the failure cannot be determined."
+        )
+
+    def test_timeline_events_sorted_chronologically(self):
+        """Test D: Events are sorted chronologically (earliest first)."""
+        docs = [
+            {
+                "document_id": "INC-1042",
+                "content": "Order API latency spike on 2026-09-16. Latency began shortly after the latest deployment.",
+                "metadata": {"date": "2026-09-16", "title": "Order API Latency Spike", "service": "orders-api", "version": "v2.8.1", "type": "incident_report"}
+            },
+            {
+                "document_id": "PM-211",
+                "content": "Postmortem on 2026-05-03: Latency incident due to database saturation.",
+                "metadata": {"date": "2026-05-03", "title": "Database Saturation Postmortem", "service": "orders-api", "version": "v2.6.0", "type": "postmortem"}
+            },
+            {
+                "document_id": "DEP-882",
+                "content": "Production deployment on 2026-09-15 at 18:10 UTC for version v2.8.1.",
+                "metadata": {"date": "2026-09-15", "title": "Orders API v2.8.1 Deployment", "service": "orders-api", "version": "v2.8.1", "type": "deployment_note"}
+            }
+        ]
+        timeline = self.agent.review_agent.extract_timeline(docs)
+        self.assertEqual(len(timeline), 3)
+        self.assertEqual(timeline[0].document_id, "PM-211", "Earliest event (2026-05-03) must come first")
+        self.assertEqual(timeline[1].document_id, "DEP-882", "Middle event (2026-09-15) must come second")
+        self.assertEqual(timeline[2].document_id, "INC-1042", "Latest event (2026-09-16) must come third")
+        self.assertEqual(timeline[1].time, "18:10 UTC", "Time must be extracted properly")
+
 if __name__ == "__main__":
     unittest.main()
 

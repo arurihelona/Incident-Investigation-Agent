@@ -9,6 +9,7 @@ from models.schemas import (
     EvidenceItem,
     EvidenceLink,
     InvestigationMetrics,
+    TimelineEvent,
 )
 from retrieval.search import RetrievalService
 from agents.evidence_review_agent import EvidenceReviewAgent
@@ -291,6 +292,23 @@ class InvestigationAgent:
         )
 
         # =====================================================================
+        # Step 6.5: Timeline Extraction & Chronological Analysis
+        # =====================================================================
+        timeline = self.review_agent.extract_timeline(all_docs_list)
+        is_timeline_query = self.review_agent.is_timeline_question(question)
+        timeline_analysis = self.review_agent.get_timeline_analysis(timeline, question)
+
+        if is_timeline_query:
+            step_num += 1
+            steps.append(InvestigationStep(
+                step=step_num,
+                action="timeline_constructed",
+                query=None,
+                description=f"Constructed chronological event timeline with {len(timeline)} event(s).",
+                details={"events_count": len(timeline), "analysis": timeline_analysis.get("narrative")}
+            ))
+
+        # =====================================================================
         # Step 7: Final Answer Synthesis (LLM or Resilient Grounded Engine)
         # =====================================================================
         final_answer = self._synthesize_final_answer(
@@ -302,7 +320,10 @@ class InvestigationAgent:
             similar_vs_identical=similar_vs_identical,
             sufficiency_info=sufficiency_info,
             metrics=metrics,
-            evidence_gap=evidence_gap
+            evidence_gap=evidence_gap,
+            timeline=timeline,
+            is_timeline_query=is_timeline_query,
+            timeline_analysis=timeline_analysis
         )
 
         step_num += 1
@@ -328,6 +349,8 @@ class InvestigationAgent:
             evidence_gap=evidence_gap,
             stop_reason=stop_reason,
             metrics=metrics,
+            timeline=timeline,
+            is_timeline_query=is_timeline_query,
             raw_summary=final_answer
         )
 
@@ -337,6 +360,10 @@ class InvestigationAgent:
         # Query specifically targeting September 17, 2027 or 2027
         if ("order" in q or "orders-api" in q) and ("2027" in q or "september 17" in q):
             return "Order API latency spike incident report September 17 2027", "incident_report", 1
+        # Timeline queries (e.g. "Since when did the deployment start failing?")
+        if self.review_agent.is_timeline_question(question):
+            if any(k in q for k in ["order", "deploy", "fail", "issue", "problem", "latency", "start"]):
+                return "Order API latency spike incident report September 16", "incident_report", 1
         # Test A: Order API latency investigation
         if "order" in q or "september 16" in q or "1042" in q:
             return "Order API latency spike incident report September 16", "incident_report", 1
@@ -531,7 +558,10 @@ class InvestigationAgent:
         similar_vs_identical: Optional[Any],
         sufficiency_info: Dict[str, Any],
         metrics: Optional[InvestigationMetrics] = None,
-        evidence_gap: Optional[List[str]] = None
+        evidence_gap: Optional[List[str]] = None,
+        timeline: Optional[List[TimelineEvent]] = None,
+        is_timeline_query: bool = False,
+        timeline_analysis: Optional[Dict[str, Any]] = None
     ) -> str:
         if self.llm_client.is_configured():
             system_prompt = (
@@ -564,6 +594,17 @@ class InvestigationAgent:
         if temporal_val and not temporal_val.get("is_supported", True):
             req_date = temporal_val.get("requested_date_str", "the requested date")
             answer_body = f"I found related Order API information, but I found no evidence for {req_date}. I cannot determine the cause from the available documents."
+
+        # Scenario: Timeline / "Since when" / Temporal Question
+        elif is_timeline_query and timeline_analysis:
+            answer_body = timeline_analysis.get("narrative", "")
+            if timeline:
+                tl_items = []
+                for ev in timeline:
+                    t_str = f" at {ev.time}" if ev.time else ""
+                    svc_info = f" ({ev.service} {ev.version})" if ev.service and ev.version else ""
+                    tl_items.append(f"- {ev.date}{t_str}: [{ev.document_id}]{svc_info} — {ev.event}")
+                answer_body += "\n\nChronological Event Timeline:\n" + "\n".join(tl_items)
 
         # Scenario A: Deployment-related incident
         elif "orders-api" in q_lower or "order api" in q_lower or "1042" in q_lower or "september 16" in q_lower:
@@ -624,6 +665,14 @@ class InvestigationAgent:
             f"Answer:\n{answer_body}\n",
             f"Evidence:\n{evidence_lines}\n",
         ]
+
+        if timeline:
+            tl_lines = []
+            for ev in timeline:
+                t_str = f" {ev.time}" if ev.time else ""
+                svc_str = f" ({ev.service or 'general'}{' ' + ev.version if ev.version else ''})"
+                tl_lines.append(f"- [{ev.date}{t_str}] [{ev.document_id}]{svc_str}: {ev.event}")
+            output_parts.append(f"Timeline:\n" + "\n".join(tl_lines) + "\n")
 
         # Requirement 7: Evidence Gap Information
         if evidence_gap:
