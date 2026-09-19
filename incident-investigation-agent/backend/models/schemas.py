@@ -47,6 +47,17 @@ class ContradictionItem(BaseModel):
     newer_doc_id: str
     explanation: str
 
+class InvestigationMetrics(BaseModel):
+    initial_searches: int = 1
+    follow_up_searches: int = 0
+    total_retrieval_calls: int = 0
+    investigation_hops: int = 0
+    unique_documents_retrieved: int = 0
+    cycles_detected: int = 0
+    max_hop_limit: int = 3
+    investigation_status: str = "Completed"
+    stop_reason: str = "Investigation completed: evidence sufficient."
+
 class SimilarVsIdentical(BaseModel):
     is_identical: bool
     service_match: bool
@@ -69,4 +80,8 @@ class InvestigationResponse(BaseModel):
     similar_vs_identical: Optional[SimilarVsIdentical] = None
     evidence_status: str  # "Sufficient" | "Insufficient"
     uncertainty: str
+    evidence_gap: List[str] = Field(default_factory=list)
+    stop_reason: Optional[str] = None
+    metrics: Optional[InvestigationMetrics] = None
     raw_summary: Optional[str] = None
+

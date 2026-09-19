@@ -1,7 +1,7 @@
 import React from 'react';
 import { FileCheck, Calendar, GitCompare, Info } from 'lucide-react';
 
-export function InvestigationAnswer({ answer, dateVersionAnalysis, similarVsIdentical }) {
+export function InvestigationAnswer({ answer, dateVersionAnalysis, similarVsIdentical, evidenceGap }) {
   // Utility to render text and format [DOC-ID] as chips
   const formatTextWithChips = (text) => {
     if (!text) return null;
@@ -44,6 +44,20 @@ export function InvestigationAnswer({ answer, dateVersionAnalysis, similarVsIden
       <div className="answer-body">
         {formatTextWithChips(cleanAnswer)}
       </div>
+
+      {evidenceGap && evidenceGap.length > 0 && (
+        <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#f87171', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+            <Info size={15} />
+            <span>Evidence Gap & Investigation Boundaries</span>
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            {evidenceGap.map((gap, i) => (
+              <li key={i}>{formatTextWithChips(gap)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {dateVersionAnalysis && dateVersionAnalysis !== 'N/A' && (
         <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>

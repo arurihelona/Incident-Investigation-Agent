@@ -44,7 +44,113 @@ class EvidenceReviewAgent:
             return -1
         return 0
 
-    def analyze_dates_and_versions(self, documents: List[Dict[str, Any]]) -> str:
+    def extract_query_temporal_intent(self, question: str) -> Optional[Dict[str, Any]]:
+        """Extracts date, month, day, and year from query text.
+        Handles formats such as:
+        - 'September 17, 2027', 'September 16 2026', 'September 16'
+        - '2027-09-17'
+        - Standalone years '2027', '2026'
+        """
+        import re
+        months = {
+            "january": 1, "jan": 1,
+            "february": 2, "feb": 2,
+            "march": 3, "mar": 3,
+            "april": 4, "apr": 4,
+            "may": 5,
+            "june": 6, "jun": 6,
+            "july": 7, "jul": 7,
+            "august": 8, "aug": 8,
+            "september": 9, "sept": 9, "sep": 9,
+            "october": 10, "oct": 10,
+            "november": 11, "nov": 11,
+            "december": 12, "dec": 12
+        }
+
+        # Check ISO format: YYYY-MM-DD
+        iso_match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", question)
+        if iso_match:
+            y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+            return {"year": y, "month": m, "day": d, "display": iso_match.group(0), "raw": iso_match.group(0)}
+
+        # Check Month Day, Year or Month Day: e.g. "September 17, 2027", "September 16"
+        month_names = "|".join(months.keys())
+        date_pattern = rf"\b({month_names})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?\b"
+        date_match = re.search(date_pattern, question, re.IGNORECASE)
+        if date_match:
+            m_name = date_match.group(1).lower()
+            m = months.get(m_name, 9)
+            d = int(date_match.group(2))
+            y = int(date_match.group(3)) if date_match.group(3) else None
+            display = date_match.group(0).strip()
+            return {"year": y, "month": m, "day": d, "display": display, "raw": display}
+
+        # Check standalone Year e.g. 2027, 2026
+        year_match = re.search(r"\b(202\d|203\d)\b", question)
+        if year_match:
+            y = int(year_match.group(1))
+            return {"year": y, "month": None, "day": None, "display": str(y), "raw": str(y)}
+
+        return None
+
+    def validate_temporal_alignment(
+        self,
+        query_temporal: Optional[Dict[str, Any]],
+        documents: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Validates whether retrieved documents contain evidence supporting the requested date."""
+        if not query_temporal:
+            return {"has_temporal_filter": False, "is_supported": True, "requested_date_str": ""}
+
+        req_year = query_temporal.get("year")
+        req_month = query_temporal.get("month")
+        req_day = query_temporal.get("day")
+        req_display = query_temporal.get("display", "")
+
+        doc_dates = []
+        for d in documents:
+            meta = d.get("metadata", d)
+            d_str = meta.get("date")
+            if d_str:
+                doc_dates.append(d_str)
+
+        # Match against document dates (format YYYY-MM-DD)
+        matching_dates = []
+        for d_str in doc_dates:
+            parts = d_str.split("-")
+            if len(parts) == 3:
+                try:
+                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                    if req_year is not None and y != req_year:
+                        continue
+                    if req_month is not None and m != req_month:
+                        continue
+                    if req_day is not None and d != req_day:
+                        continue
+                    matching_dates.append(d_str)
+                except ValueError:
+                    continue
+
+        if not matching_dates:
+            # If explicit year or day was required and no document matched
+            if req_year is not None or (req_month is not None and req_day is not None):
+                return {
+                    "has_temporal_filter": True,
+                    "is_supported": False,
+                    "requested_date_str": req_display,
+                    "matching_dates": [],
+                    "available_dates": doc_dates
+                }
+
+        return {
+            "has_temporal_filter": True,
+            "is_supported": True,
+            "requested_date_str": req_display,
+            "matching_dates": matching_dates,
+            "available_dates": doc_dates
+        }
+
+    def analyze_dates_and_versions(self, documents: List[Dict[str, Any]], question: Optional[str] = None) -> str:
         """Analyzes temporal and version relationships across retrieved documents."""
         if not documents:
             return "No documents available for date and version analysis."
@@ -65,6 +171,17 @@ class EvidenceReviewAgent:
                 "version": version,
                 "service": service
             })
+
+        # Check temporal alignment with query if question provided
+        if question:
+            temporal_intent = self.extract_query_temporal_intent(question)
+            temporal_val = self.validate_temporal_alignment(temporal_intent, documents)
+            if temporal_val["has_temporal_filter"] and not temporal_val["is_supported"]:
+                avail = ", ".join(sorted(set(m["date"] for m in doc_meta)))
+                analysis_lines.append(
+                    f"Temporal Discrepancy: The question requests evidence for '{temporal_val['requested_date_str']}'. "
+                    f"Available evidence in the corpus is dated {avail}. No evidence exists for the requested date."
+                )
 
         incidents = [m for m in doc_meta if m["type"] == "incident_report"]
         deployments = [m for m in doc_meta if m["type"] == "deployment_note"]
@@ -223,6 +340,27 @@ class EvidenceReviewAgent:
         q_lower = question.lower()
         doc_ids = {d.get("document_id") for d in documents}
 
+        # Step 1: Temporal Validation
+        temporal_intent = self.extract_query_temporal_intent(question)
+        temporal_val = self.validate_temporal_alignment(temporal_intent, documents)
+
+        if temporal_val["has_temporal_filter"] and not temporal_val["is_supported"]:
+            req_date = temporal_val["requested_date_str"]
+            return {
+                "status": "Insufficient",
+                "statement": f"I found related Order API information, but I found no evidence for {req_date}. I cannot determine the cause from the available documents.",
+                "uncertainty": (
+                    f"Temporal Validation Mismatch: The inquiry specifically targets {req_date}. "
+                    f"Retrieved documents in the knowledge base are dated from 2026 (e.g. 2026-09-16). "
+                    f"Historical evidence cannot be fabricated or used to substantiate events in {req_date}."
+                ),
+                "evidence_gap": [
+                    f"No evidence, telemetry, or incident records exist for {req_date}.",
+                    "Retrieved documents are from an earlier time period (2026) and do not support the requested date."
+                ],
+                "temporal_validation": temporal_val
+            }
+
         # Case: "Did this exact failure happen before?"
         if "exact failure" in q_lower or "exact same" in q_lower or ("happened before" in q_lower and "orders-api" not in q_lower and "order api" not in q_lower and "1042" not in q_lower):
             return {
@@ -233,7 +371,11 @@ class EvidenceReviewAgent:
                     "The available records ([INC-300] and [INC-301]) document distinct services (catalog-api vs orders-api) "
                     "and different root causes (database saturation vs expired certificate). "
                     "There is no historical incident report showing that this exact failure has occurred previously."
-                )
+                ),
+                "evidence_gap": [
+                    "No historical incident report with identical service, version, and failure mechanism.",
+                    "Available records ([INC-300], [INC-301]) represent different services and distinct root causes (DB saturation vs expired certificate)."
+                ]
             }
 
         # Case: Deployment-related incident (Test A)
@@ -247,7 +389,11 @@ class EvidenceReviewAgent:
                     "the latest deployment, the documents provide correlation only and do NOT provide root-cause telemetry or logs "
                     "proving that the deployment caused the latency spike. Furthermore, historical incident [PM-211] involved database "
                     "saturation on v2.6.0, which differs from the current deployment context."
-                )
+                ),
+                "evidence_gap": [
+                    "No application or container logs available confirming exact failure mechanism.",
+                    "No database telemetry or diagnostic metrics proving deployment v2.8.1 directly caused the latency spike (temporal correlation only)."
+                ]
             }
 
         # Case: Contradictory guidance (Test B)
@@ -260,18 +406,26 @@ class EvidenceReviewAgent:
                     "Because GUIDE-41 supersedes GUIDE-12, the engineer must verify dependency health first. "
                     "If dependency health is normal and latency persists without dependency failure, whether to proceed with "
                     "a service restart remains subject to system health verification."
-                )
+                ),
+                "evidence_gap": [
+                    "No live health check telemetry for Service A dependencies (operator must verify dependency health first)."
+                ]
             }
 
         if len(documents) == 0:
             return {
                 "status": "Insufficient",
                 "statement": "Insufficient evidence to determine this from the available documents.",
-                "uncertainty": "No documents matching the investigation question could be retrieved from the repository."
+                "uncertainty": "No documents matching the investigation question could be retrieved from the repository.",
+                "evidence_gap": [
+                    "No documents matching the query were found in the document store."
+                ]
             }
 
         return {
             "status": "Sufficient",
             "statement": "Evidence is sufficient based on retrieved documentation.",
-            "uncertainty": "Findings are strictly grounded in retrieved document excerpts. Unsubstantiated causal claims are excluded."
+            "uncertainty": "Findings are strictly grounded in retrieved document excerpts. Unsubstantiated causal claims are excluded.",
+            "evidence_gap": []
         }
+

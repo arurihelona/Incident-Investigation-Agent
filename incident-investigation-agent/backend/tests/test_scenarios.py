@@ -158,6 +158,44 @@ class TestIncidentInvestigationAgent(unittest.TestCase):
         doc_ids = [e.document_id for e in resp.evidence]
         self.assertEqual(len(doc_ids), len(set(doc_ids)), "Each document must appear only once in collected evidence.")
 
+    def test_temporal_validation_future_date(self):
+        """Test: Temporal validation rejects answering 2027 question using unrelated 2026 data."""
+        question = "Why did the Order API become slow on September 17, 2027?"
+        req = InvestigationRequest(question=question)
+        resp = self.agent.investigate(req)
+
+        # Status must be Insufficient
+        self.assertEqual(resp.evidence_status, "Insufficient")
+
+        # Must explicitly state lack of evidence for requested date
+        expected_statement = "I found related Order API information, but I found no evidence for September 17, 2027. I cannot determine the cause from the available documents."
+        self.assertIn(expected_statement, resp.answer)
+
+        # Evidence gap must note the missing date
+        self.assertTrue(len(resp.evidence_gap) > 0, "Evidence gap must be identified")
+        self.assertTrue(any("September 17, 2027" in gap for gap in resp.evidence_gap))
+
+        # Stop reason must indicate completion
+        self.assertEqual(resp.stop_reason, "Investigation completed: insufficient evidence.")
+
+    def test_investigation_metrics_and_hop_limits(self):
+        """Test: Investigation metrics are populated and max hop limit is enforced."""
+        question = "Why did the Order API become slow on September 16? Check whether the deployment was related and whether we have seen this before."
+        req = InvestigationRequest(question=question)
+        resp = self.agent.investigate(req)
+
+        # Metrics verification
+        self.assertIsNotNone(resp.metrics)
+        self.assertEqual(resp.metrics.initial_searches, 1)
+        self.assertGreaterEqual(resp.metrics.follow_up_searches, 1)
+        self.assertGreaterEqual(resp.metrics.total_retrieval_calls, 2)
+        self.assertLessEqual(resp.metrics.investigation_hops, resp.metrics.max_hop_limit)
+        self.assertEqual(resp.metrics.max_hop_limit, 3)
+        self.assertGreaterEqual(resp.metrics.cycles_detected, 1)
+        self.assertEqual(resp.metrics.investigation_status, "Completed")
+        self.assertIn("Investigation completed", resp.metrics.stop_reason)
+
 if __name__ == "__main__":
     unittest.main()
+
 

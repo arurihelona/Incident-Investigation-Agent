@@ -109,6 +109,7 @@ export default function App() {
               answer={result.answer}
               dateVersionAnalysis={result.date_version_analysis}
               similarVsIdentical={result.similar_vs_identical}
+              evidenceGap={result.evidence_gap}
             />
 
             <ContradictionCard
@@ -127,6 +128,7 @@ export default function App() {
           <aside className="sidebar-column">
             <InvestigationTimeline
               steps={result.investigation_steps}
+              metrics={result.metrics}
               isLoading={isLoading}
             />
           </aside>
