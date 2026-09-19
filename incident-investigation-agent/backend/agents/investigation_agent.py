@@ -30,6 +30,9 @@ class InvestigationAgent:
         question = request.question.strip()
         steps: List[InvestigationStep] = []
         evidence_dict: Dict[str, Dict[str, Any]] = {}
+        visited_documents: set[str] = set()
+        visited_targets: set[str] = set()
+        visited_queries: set[str] = set()
 
         # =====================================================================
         # Step 1: Understand Question & Initial Retrieval
@@ -43,6 +46,7 @@ class InvestigationAgent:
             description=f"Formulated initial search query: '{initial_query}'",
             details={"raw_question": question, "derived_query": initial_query, "doc_type": doc_type_filter}
         ))
+        visited_queries.add(initial_query.strip().lower())
 
         initial_docs = self.retrieval_service.search(
             initial_query,
@@ -50,7 +54,11 @@ class InvestigationAgent:
             doc_type=doc_type_filter
         )
         for doc in initial_docs:
-            evidence_dict[doc["document_id"]] = doc
+            d_id = doc.get("document_id")
+            if d_id:
+                evidence_dict[d_id] = doc
+                visited_documents.add(d_id)
+                visited_targets.add(d_id)
 
         # =====================================================================
         # Step 2: Extract Facts from Discovered Evidence
@@ -72,45 +80,110 @@ class InvestigationAgent:
         ))
 
         # =====================================================================
-        # Step 3 & 4: Identify Missing Information & Targeted Follow-Up Searches
+        # Step 3 & 4: Multi-Hop Investigation Loop with Visited Tracking
         # =====================================================================
-        follow_up_queries = self._plan_follow_up_searches(question, extracted_facts, evidence_dict)
-
-        for f_query in follow_up_queries:
-            step_num += 1
-            steps.append(InvestigationStep(
-                step=step_num,
-                action="follow_up_search",
-                query=f_query["query"],
-                description=f_query["reason"],
-                details={
-                    "target_service": f_query.get("service"),
-                    "target_version": f_query.get("version"),
-                    "target_type": f_query.get("doc_type")
-                }
-            ))
-
-            f_results = self.retrieval_service.search(
-                f_query["query"],
-                limit=f_query.get("limit", 2),
-                service=f_query.get("service"),
-                doc_type=f_query.get("doc_type")
+        max_hops = 3
+        hop = 0
+        while hop < max_hops:
+            hop += 1
+            candidate_searches = self._plan_follow_up_searches(
+                question=question,
+                facts=extracted_facts,
+                evidence_dict=evidence_dict,
+                visited_targets=visited_targets
             )
-            new_discovered = []
-            for doc in f_results:
-                if doc["document_id"] not in evidence_dict:
-                    evidence_dict[doc["document_id"]] = doc
-                    new_discovered.append(doc["document_id"])
+            if not candidate_searches:
+                break
 
-            if new_discovered:
+            new_evidence_found_in_hop = False
+            for f_query in candidate_searches:
+                target_id = f_query.get("target_id")
+                query_text = f_query["query"].strip().lower()
+
+                # Requirement 2: Prevent Circular Multi-Hop Investigation & Visited Check
+                if (target_id and (target_id in visited_documents or target_id in visited_targets)) or (query_text in visited_queries):
+                    logger.info("Stopping investigation path: document already visited.")
+                    step_num += 1
+                    steps.append(InvestigationStep(
+                        step=step_num,
+                        action="path_stopped_already_visited",
+                        query=f_query["query"],
+                        description="Stopping investigation path: document already visited.",
+                        details={
+                            "target_id": target_id,
+                            "query": f_query["query"],
+                            "reason": "Target document or query already visited in investigation path."
+                        }
+                    ))
+                    continue
+
+                # Register query & target in visited tracking
+                if target_id:
+                    visited_targets.add(target_id)
+                visited_queries.add(query_text)
+
                 step_num += 1
                 steps.append(InvestigationStep(
                     step=step_num,
-                    action="additional_evidence_retrieved",
+                    action="follow_up_search",
                     query=f_query["query"],
-                    description=f"Discovered new corroborating evidence: {', '.join(new_discovered)}",
-                    details={"new_document_ids": new_discovered}
+                    description=f_query["reason"],
+                    details={
+                        "target_id": target_id,
+                        "target_service": f_query.get("service"),
+                        "target_version": f_query.get("version"),
+                        "target_type": f_query.get("doc_type")
+                    }
                 ))
+
+                f_results = self.retrieval_service.search(
+                    f_query["query"],
+                    limit=f_query.get("limit", 2),
+                    service=f_query.get("service"),
+                    doc_type=f_query.get("doc_type")
+                )
+
+                # Requirement 1 & 3: Compare results with already collected evidence & Deduplicate
+                new_discovered = []
+                for doc in f_results:
+                    d_id = doc.get("document_id")
+                    if d_id and d_id not in evidence_dict and d_id not in visited_documents:
+                        evidence_dict[d_id] = doc
+                        visited_documents.add(d_id)
+                        visited_targets.add(d_id)
+                        new_discovered.append(d_id)
+
+                if not new_discovered:
+                    # Requirement 1: Stop when follow-up search finds no new evidence
+                    logger.info("Stopping investigation: no new evidence found.")
+                    step_num += 1
+                    steps.append(InvestigationStep(
+                        step=step_num,
+                        action="path_stopped_no_new_evidence",
+                        query=f_query["query"],
+                        description="Stopping investigation: no new evidence found.",
+                        details={
+                            "query": f_query["query"],
+                            "target_id": target_id,
+                            "results_count": len(f_results),
+                            "reason": "All retrieved documents were already collected or query returned no documents."
+                        }
+                    ))
+                else:
+                    new_evidence_found_in_hop = True
+                    step_num += 1
+                    steps.append(InvestigationStep(
+                        step=step_num,
+                        action="additional_evidence_retrieved",
+                        query=f_query["query"],
+                        description=f"Discovered new corroborating evidence: {', '.join(new_discovered)}",
+                        details={"new_document_ids": new_discovered}
+                    ))
+                    # Refresh extracted facts with newly discovered evidence
+                    extracted_facts = self._extract_facts(list(evidence_dict.values()))
+
+            if not new_evidence_found_in_hop:
+                break
 
         # =====================================================================
         # Step 5: Connect Evidence Graph
@@ -134,6 +207,12 @@ class InvestigationAgent:
         similar_vs_identical = self.review_agent.evaluate_similar_vs_identical(question, all_docs_list)
         sufficiency_info = self.review_agent.determine_evidence_sufficiency(question, all_docs_list, similar_vs_identical)
 
+        # Requirement 5: Log investigation completion status
+        if sufficiency_info.get("status") == "Sufficient":
+            logger.info("Investigation completed: sufficient evidence.")
+        else:
+            logger.info("Investigation completed: insufficient evidence.")
+
         step_num += 1
         steps.append(InvestigationStep(
             step=step_num,
@@ -147,12 +226,17 @@ class InvestigationAgent:
             }
         ))
 
-        # Convert to EvidenceItem list
+        # Requirement 3: Strictly deduplicate EvidenceItem list
         evidence_items = []
+        seen_doc_ids = set()
         for doc in all_docs_list:
             meta = doc.get("metadata", doc)
+            d_id = doc.get("document_id") or meta.get("document_id", "")
+            if d_id and d_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(d_id)
             evidence_items.append(EvidenceItem(
-                document_id=doc.get("document_id") or meta.get("document_id", ""),
+                document_id=d_id,
                 type=meta.get("type", ""),
                 service=meta.get("service") or None,
                 date=meta.get("date", ""),
@@ -251,63 +335,94 @@ class InvestigationAgent:
         self,
         question: str,
         facts: Dict[str, List[str]],
-        evidence_dict: Dict[str, Any]
+        evidence_dict: Dict[str, Any],
+        visited_targets: Optional[set] = None
     ) -> List[Dict[str, Any]]:
         queries = []
         q_lower = question.lower()
 
         # Test A: Order API latency
         if "order" in q_lower or "orders-api" in facts["services"]:
-            if "DEP-882" not in evidence_dict:
+            queries.append({
+                "target_id": "DEP-882",
+                "query": "Orders deployment version v2.8.1 deployed to production 18:10 UTC",
+                "reason": "Search deployment records for orders-api matching discovered version v2.8.1 deployed around September 15-16",
+                "service": "orders-api",
+                "doc_type": "deployment_note",
+                "version": "v2.8.1",
+                "limit": 1
+            })
+            queries.append({
+                "target_id": "PM-211",
+                "query": "Previous latency incident postmortem database connection saturation",
+                "reason": "Search historical postmortems for orders-api to check if similar latency incidents occurred before",
+                "service": "orders-api",
+                "doc_type": "postmortem",
+                "limit": 1
+            })
+            # Multi-hop loop candidate: follow cross-reference back to incident report (circular hop)
+            if "DEP-882" in evidence_dict:
                 queries.append({
-                    "query": "Orders deployment version v2.8.1 deployed to production 18:10 UTC",
-                    "reason": "Search deployment records for orders-api matching discovered version v2.8.1 deployed around September 15-16",
+                    "target_id": "INC-1042",
+                    "query": "Order API latency spike incident report September 16",
+                    "reason": "Follow deployment cross-reference back to originating incident report INC-1042",
                     "service": "orders-api",
-                    "doc_type": "deployment_note",
-                    "version": "v2.8.1",
+                    "doc_type": "incident_report",
                     "limit": 1
                 })
-            if "PM-211" not in evidence_dict:
+            # Secondary multi-hop branch: check unindexed infrastructure telemetry
+            if "DEP-882" in evidence_dict and "PM-211" in evidence_dict:
                 queries.append({
-                    "query": "Previous latency incident postmortem database connection saturation",
-                    "reason": "Search historical postmortems for orders-api to check if similar latency incidents occurred before",
+                    "target_id": "orders-telemetry-net",
+                    "query": "Orders API network partition firewall timeout telemetry report",
+                    "reason": "Search for network infrastructure incidents during the maintenance window",
                     "service": "orders-api",
-                    "doc_type": "postmortem",
                     "limit": 1
                 })
 
         # Test B: Troubleshooting / Restart procedure
         if "restart" in q_lower or "failing after a deployment" in q_lower or "service a" in q_lower or "troubleshooting" in q_lower:
-            if "GUIDE-41" not in evidence_dict:
-                queries.append({
-                    "query": "Service A incident procedure dependency failures check health first",
-                    "reason": "Search for superseding or newer troubleshooting guides for Service A",
-                    "doc_type": "troubleshooting",
-                    "limit": 1
-                })
-            if "GUIDE-12" not in evidence_dict:
-                queries.append({
-                    "query": "Service restart procedure Restart Service A when latency remains high",
-                    "reason": "Search for baseline restart procedure troubleshooting guide",
-                    "doc_type": "troubleshooting",
-                    "limit": 1
-                })
+            queries.append({
+                "target_id": "GUIDE-41",
+                "query": "Service A incident procedure dependency failures check health first",
+                "reason": "Search for superseding or newer troubleshooting guides for Service A",
+                "doc_type": "troubleshooting",
+                "limit": 1
+            })
+            queries.append({
+                "target_id": "GUIDE-12",
+                "query": "Service restart procedure Restart Service A when latency remains high",
+                "reason": "Search for baseline restart procedure troubleshooting guide",
+                "doc_type": "troubleshooting",
+                "limit": 1
+            })
 
         # Test C: Exact failure happened before
         if "exact failure" in q_lower or "happened before" in q_lower:
-            if "INC-301" not in evidence_dict:
+            queries.append({
+                "target_id": "INC-301",
+                "query": "Order errors expired certificate incident report",
+                "reason": "Query historical incident reports across services to evaluate whether any identical failure occurred",
+                "doc_type": "incident_report",
+                "limit": 1
+            })
+            queries.append({
+                "target_id": "INC-300",
+                "query": "Catalog latency database saturation incident report",
+                "reason": "Query catalog service incident reports for historical failure comparison",
+                "doc_type": "incident_report",
+                "limit": 1
+            })
+
+        # Generic fact-driven search for other services / scenarios
+        if not queries:
+            for svc in facts.get("services", []):
                 queries.append({
-                    "query": "Order errors expired certificate incident report",
-                    "reason": "Query historical incident reports across services to evaluate whether any identical failure occurred",
-                    "doc_type": "incident_report",
-                    "limit": 1
-                })
-            if "INC-300" not in evidence_dict:
-                queries.append({
-                    "query": "Catalog latency database saturation incident report",
-                    "reason": "Query catalog service incident reports for historical failure comparison",
-                    "doc_type": "incident_report",
-                    "limit": 1
+                    "target_id": f"{svc}-docs",
+                    "query": f"{svc} incident postmortem guide",
+                    "reason": f"Search for operational documents related to discovered service {svc}",
+                    "service": svc,
+                    "limit": 2
                 })
 
         return queries

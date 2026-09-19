@@ -113,5 +113,51 @@ class TestIncidentInvestigationAgent(unittest.TestCase):
         self.assertIn(expected_statement, resp.answer)
         self.assertIn(expected_statement, resp.uncertainty)
 
+    def test_stop_on_no_new_evidence(self):
+        """Test: Investigation path cleanly stops when follow-up search finds no new evidence."""
+        with self.assertLogs("investigation_agent", level="INFO") as cm:
+            question = "Why did the Order API become slow on September 16? Check whether the deployment was related and whether we have seen this before."
+            req = InvestigationRequest(question=question)
+            resp = self.agent.investigate(req)
+
+        # Verify required log message is emitted
+        self.assertTrue(
+            any("Stopping investigation: no new evidence found." in msg for msg in cm.output),
+            "Log 'Stopping investigation: no new evidence found.' must be recorded."
+        )
+
+        # Verify investigation step action is recorded
+        step_actions = [s.action for s in resp.investigation_steps]
+        self.assertIn("path_stopped_no_new_evidence", step_actions, "Step action 'path_stopped_no_new_evidence' must be recorded.")
+
+        # Verify evidence review and completion
+        self.assertEqual(resp.evidence_status, "Sufficient")
+        self.assertTrue(
+            any("Investigation completed: sufficient evidence." in msg for msg in cm.output),
+            "Log 'Investigation completed: sufficient evidence.' must be recorded."
+        )
+
+    def test_circular_investigation_prevention(self):
+        """Test: Circular multi-hop path (e.g. INC-1042 -> DEP-882 -> INC-1042) is stopped and evidence is deduplicated."""
+        with self.assertLogs("investigation_agent", level="INFO") as cm:
+            question = "Why did the Order API become slow on September 16? Check whether the deployment was related and whether we have seen this before."
+            req = InvestigationRequest(question=question)
+            resp = self.agent.investigate(req)
+
+        # Verify circular stop log message is emitted
+        self.assertTrue(
+            any("Stopping investigation path: document already visited." in msg for msg in cm.output),
+            "Log 'Stopping investigation path: document already visited.' must be recorded."
+        )
+
+        # Verify step action is recorded
+        step_actions = [s.action for s in resp.investigation_steps]
+        self.assertIn("path_stopped_already_visited", step_actions, "Step action 'path_stopped_already_visited' must be recorded.")
+
+        # Verify each document appears only once (strictly deduplicated)
+        doc_ids = [e.document_id for e in resp.evidence]
+        self.assertEqual(len(doc_ids), len(set(doc_ids)), "Each document must appear only once in collected evidence.")
+
 if __name__ == "__main__":
     unittest.main()
+
